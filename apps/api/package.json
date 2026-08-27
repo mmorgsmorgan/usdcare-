@@ -1,0 +1,29 @@
+{
+  "name": "@usdcare/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@privy-io/node": "^0.11.0",
+    "dotenv": "^17.2.0",
+    "fastify": "^5.6.0",
+    "jose": "^6.2.9",
+    "postgres": "^3.4.7",
+    "resend": "^6.22.1",
+    "viem": "^2.55.18",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

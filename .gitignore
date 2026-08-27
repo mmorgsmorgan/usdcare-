@@ -1,0 +1,12 @@
+node_modules/
+.next/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+*.tsbuildinfo
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+contracts/lib/
