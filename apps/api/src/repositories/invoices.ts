@@ -181,13 +181,23 @@ export async function confirmPublicPayment(publicId: string, transactionHash: st
     } catch { return false; }
   });
   if (!matching) throw new InvoiceError(400, "This transaction does not match the invoice amount and settlement wallet.");
+
+  let resolvedPayerUserId = payer?.userId ?? null;
+  if (!resolvedPayerUserId && payerWalletAddress && typeof payerWalletAddress === "string") {
+    const targetWallet: string = payerWalletAddress;
+    const [foundUser] = await sql`
+      select user_id from wallets where lower(address) = ${targetWallet.toLowerCase()} limit 1
+    `;
+    if (foundUser) resolvedPayerUserId = foundUser.user_id as string;
+  }
+
   await sql.begin(async (transaction) => {
     await transaction`update invoices set status = 'PAID', updated_at = now() where id = ${request.invoice_id}`;
     await transaction`update payment_requests set status = 'CONFIRMED', transaction_hash = ${transactionHash}, confirmed_at = now(), updated_at = now() where id = ${request.id}`;
     await transaction`
       insert into payments (invoice_id, payment_request_id, payer_user_id, payer_wallet_address, transaction_hash, amount_minor, chain_caip2)
-      values (${request.invoice_id}, ${request.id}, ${payer?.userId ?? null}, ${payerWalletAddress}, ${transactionHash}, ${request.amount_minor}, ${ARC_TESTNET_CAIP2})
-      on conflict (transaction_hash) do nothing
+      values (${request.invoice_id}, ${request.id}, ${resolvedPayerUserId}, ${payerWalletAddress}, ${transactionHash}, ${request.amount_minor}, ${ARC_TESTNET_CAIP2})
+      on conflict (transaction_hash) do update set payer_user_id = coalesce(payments.payer_user_id, excluded.payer_user_id)
     `;
   });
   return { status: "PAID", transactionHash };
@@ -203,10 +213,17 @@ export async function listPayerPayments(privyUserId: string) {
       organizations.organization_type as provider_type, organizations.country as provider_country,
       organizations.address as provider_address
     from payments
-    join users on users.id = payments.payer_user_id
     join invoices on invoices.id = payments.invoice_id
     join organizations on organizations.id = invoices.organization_id
-    where users.privy_user_id = ${privyUserId}
+    where exists (
+      select 1 from users u
+      left join wallets w on w.user_id = u.id
+      where u.privy_user_id = ${privyUserId}
+      and (
+        payments.payer_user_id = u.id
+        or (payments.payer_wallet_address is not null and lower(payments.payer_wallet_address) = lower(w.address))
+      )
+    )
     order by payments.confirmed_at desc
     limit 100
   `;

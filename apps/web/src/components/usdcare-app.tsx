@@ -32,7 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { usePrivy, useConnectWallet, useWallets } from "@privy-io/react-auth";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPublicClient, decodeEventLog, encodeFunctionData, formatEther, http, keccak256, parseUnits, toHex, type Address } from "viem";
 import escrowArtifact from "../contracts/USDCareTreatmentEscrow.json";
 import escrowV2Artifact from "../contracts/USDCareTreatmentEscrowV2.json";
@@ -793,7 +793,7 @@ function ProviderWorkspace({
             <div><p>Sunday, 16 August</p><h1>{titles[activeView]}</h1></div>
             {organization && (activeView === "overview" || activeView === "invoices") && <button className="button button-primary" onClick={() => setInvoiceModal(true)}><Plus size={17} /> New care payment</button>}
           </div>
-          {activeView === "overview" && (demo ? <Overview onViewInvoices={() => setActiveView("invoices")} onViewPayments={() => setActiveView("payments")} onViewEscrow={() => setActiveView("escrows")} /> : organization ? <LiveOrganizationOverview invoices={invoiceRows} onViewInvoices={() => setActiveView("invoices")} /> : <IndividualOverview />)}
+          {activeView === "overview" && (demo ? <Overview onViewInvoices={() => setActiveView("invoices")} onViewPayments={() => setActiveView("payments")} onViewEscrow={() => setActiveView("escrows")} /> : organization ? <LiveOrganizationOverview invoices={invoiceRows} onViewInvoices={() => setActiveView("invoices")} /> : <IndividualOverview payerPayments={payerPayments} escrows={escrows} onViewPayments={() => setActiveView("payments")} onViewEscrows={() => setActiveView("escrows")} />)}
           {activeView === "payments" && <PaymentsView live={!demo} payerPayments={payerPayments} />}
           {activeView === "invoices" && <InvoicesView invoices={invoiceRows} onCreate={() => setInvoiceModal(true)} />}
           {activeView === "escrows" && <EscrowsView live={!demo} escrows={escrows} isProvider={!!organization} onCreate={() => setEscrowModal(true)} getAccessToken={getAccessToken} organizationWallet={organization?.primaryWalletAddress ?? wallets[0]?.address} onUpdated={loadEscrows} />}
@@ -803,22 +803,23 @@ function ProviderWorkspace({
           {activeView === "settings" && <SettingsView email={email} wallets={wallets} organization={organization} onConnectWallet={onConnectWallet} demo={demo} />}
         </div>
       </main>
-      <MobileNav activeView={activeView} onNavigate={setActiveView} />
+      <MobileNav activeView={activeView} onNavigate={setActiveView} isProvider={!!organization} />
       {invoiceModal && <CreateInvoiceModal organizationName={organizationName} onClose={() => setInvoiceModal(false)} onCreate={handleCreateInvoice} />}
       {escrowModal && organization && getAccessToken && <CreateEscrowModal organizationId={organization.id} organizationWallet={organization.primaryWalletAddress ?? wallets[0]?.address ?? ""} getAccessToken={getAccessToken} onClose={() => setEscrowModal(false)} onCreated={(paymentUrl) => { setEscrowModal(false); void loadEscrows(); if (paymentUrl) window.location.href = paymentUrl; }} />}
     </div>
   );
 }
 
-function Sidebar({ activeView, onNavigate, open }: { activeView: NavView; onNavigate: (view: NavView) => void; open: boolean }) {
-  const items: { view: NavView; label: string; icon: typeof LayoutDashboard }[] = [
+function Sidebar({ activeView, onNavigate, open, isProvider = true }: { activeView: NavView; onNavigate: (view: NavView) => void; open: boolean; isProvider?: boolean }) {
+  const allItems: { view: NavView; label: string; icon: typeof LayoutDashboard; providerOnly?: boolean }[] = [
     { view: "overview", label: "Overview", icon: LayoutDashboard },
     { view: "payments", label: "Payments", icon: CircleDollarSign },
-    { view: "invoices", label: "Invoices", icon: FileText },
+    { view: "invoices", label: "Invoices", icon: FileText, providerOnly: true },
     { view: "escrows", label: "Care plans", icon: HeartPulse },
-    { view: "patients", label: "Patients", icon: Users },
-    { view: "reports", label: "Reports", icon: ClipboardList },
+    { view: "patients", label: "Patients", icon: Users, providerOnly: true },
+    { view: "reports", label: "Reports", icon: ClipboardList, providerOnly: true },
   ];
+  const items = allItems.filter(item => isProvider || !item.providerOnly);
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <Brand />
@@ -832,14 +833,131 @@ function Sidebar({ activeView, onNavigate, open }: { activeView: NavView; onNavi
   );
 }
 
-function MobileNav({ activeView, onNavigate }: { activeView: NavView; onNavigate: (view: NavView) => void }) {
+function MobileNav({ activeView, onNavigate, isProvider = true }: { activeView: NavView; onNavigate: (view: NavView) => void; isProvider?: boolean }) {
   return (
     <nav className="mobile-nav">
       <button className={activeView === "overview" ? "active" : ""} onClick={() => onNavigate("overview")}><LayoutDashboard size={19} /><span>Overview</span></button>
       <button className={activeView === "payments" ? "active" : ""} onClick={() => onNavigate("payments")}><CircleDollarSign size={19} /><span>Payments</span></button>
-      <button className={activeView === "invoices" ? "active" : ""} onClick={() => onNavigate("invoices")}><FileText size={19} /><span>Invoices</span></button>
+      {isProvider && <button className={activeView === "invoices" ? "active" : ""} onClick={() => onNavigate("invoices")}><FileText size={19} /><span>Invoices</span></button>}
       <button className={activeView === "escrows" ? "active" : ""} onClick={() => onNavigate("escrows")}><HeartPulse size={19} /><span>Care plans</span></button>
     </nav>
+  );
+}
+
+function IndividualOverview({
+  payerPayments = [],
+  escrows = [],
+  onViewPayments,
+  onViewEscrows,
+}: {
+  payerPayments?: ApiPayerPayment[];
+  escrows?: ApiEscrow[];
+  onViewPayments: () => void;
+  onViewEscrows: () => void;
+}) {
+  const totalPaidFormatted = useMemo(() => {
+    const sumPayments = payerPayments.reduce((acc, p) => acc + (Number(p.amount_minor) || 0), 0);
+    const sumEscrows = escrows.reduce((acc, e) => acc + (Number(e.funded_minor || e.total_minor) || 0), 0);
+    return ((sumPayments + sumEscrows) / 1_000_000).toFixed(2);
+  }, [payerPayments, escrows]);
+
+  const hasActivity = payerPayments.length > 0 || escrows.length > 0;
+
+  if (!hasActivity) {
+    return (
+      <div className="content-stack">
+        <section className="panel empty-workspace-panel">
+          <div className="empty-workspace-icon"><WalletCards size={24} /></div>
+          <div>
+            <h2>Your healthcare payment account is ready</h2>
+            <p>Use your Arc Testnet wallet to pay a provider payment link or fund a care plan. Your payment history and verified receipts will appear here.</p>
+          </div>
+        </section>
+        <section className="panel empty-state-panel">
+          <div><h2>No payment activity yet</h2><p>There are no confirmed invoices or active care plans connected to this account.</p></div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="content-stack">
+      <section className="summary-band">
+        <SummaryItem label="Total Funded & Paid" value={totalPaidFormatted} suffix="USDC" detail={`${payerPayments.length + escrows.length} total activity items`} success />
+        <SummaryItem label="Direct Payments" value={String(payerPayments.length)} detail="Confirmed provider invoices" />
+        <SummaryItem label="Care Plans" value={String(escrows.length)} detail="Active & completed treatment escrows" />
+      </section>
+
+      {payerPayments.length > 0 && (
+        <section className="panel data-panel">
+          <div className="section-title payment-history-title">
+            <div>
+              <h2>Recent Payments</h2>
+              <p>Verified healthcare payments and receipts.</p>
+            </div>
+            <button type="button" className="button button-secondary" onClick={onViewPayments}>View all payments</button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Provider</th><th>Invoice</th><th>Service</th><th className="amount-cell">Amount</th><th>Status</th><th>Date</th></tr>
+              </thead>
+              <tbody>
+                {payerPayments.slice(0, 5).map((payment) => (
+                  <tr key={payment.id}>
+                    <td>
+                      <strong>{payment.provider_name}</strong>
+                      <small className="provider-meta">{[payment.provider_address, payment.provider_country].filter(Boolean).join(", ") || payment.provider_type?.replaceAll("_", " ")}</small>
+                    </td>
+                    <td className="strong-cell">{payment.invoice_number}<small className="provider-meta mono">{payment.patient_reference}</small></td>
+                    <td>{payment.service_description}</td>
+                    <td className="amount-cell mono">{(Number(payment.amount_minor) / 1_000_000).toFixed(2)} <small>{payment.token_symbol}</small></td>
+                    <td>
+                      <a className="transaction-status" href={`https://testnet.arcscan.app/tx/${payment.transaction_hash}`} target="_blank" rel="noreferrer">
+                        <StatusBadge value={payment.status} /><ExternalLink size={13} />
+                      </a>
+                    </td>
+                    <td className="muted-cell">{new Date(payment.confirmed_at).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {escrows.length > 0 && (
+        <section className="panel data-panel">
+          <div className="section-title payment-history-title">
+            <div>
+              <h2>Care Plans & Escrows</h2>
+              <p>Milestone-based treatment funds and approvals.</p>
+            </div>
+            <button type="button" className="button button-secondary" onClick={onViewEscrows}>View all care plans</button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Treatment & Patient</th><th>Status</th><th>Milestones</th><th className="amount-cell">Total Escrow</th></tr>
+              </thead>
+              <tbody>
+                {escrows.slice(0, 5).map((escrow) => (
+                  <tr key={escrow.id} className="interactive-row" onClick={() => escrow.public_id && window.open(`/escrow-pay/${escrow.public_id}`, "_blank")}>
+                    <td>
+                      <strong>{escrow.treatment_name}</strong>
+                      <small className="provider-meta">Ref: {escrow.patient_reference}</small>
+                    </td>
+                    <td><StatusBadge value={escrow.status} /></td>
+                    <td>{escrow.milestones.length} milestones ({escrow.milestones.filter(m => m.status === "RELEASED").length} released)</td>
+                    <td className="amount-cell mono">{(Number(escrow.total_minor) / 1_000_000).toFixed(2)} <small>USDC</small></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -876,23 +994,6 @@ function LiveOrganizationOverview({ invoices, onViewInvoices }: { invoices: type
   const awaiting = invoices.filter((invoice) => invoice.status.toLowerCase().includes("awaiting")).length;
   const paid = invoices.filter((invoice) => invoice.status.toLowerCase().includes("paid")).length;
   return <div className="content-stack"><section className="summary-band"><SummaryItem label="Invoices" value={String(invoices.length)} detail="Created payment requests" /><SummaryItem label="Awaiting payment" value={String(awaiting)} detail="Open invoices" attention={awaiting > 0} /><SummaryItem label="Paid" value={String(paid)} detail="Verified settlements" success={paid > 0} /><SummaryItem label="Network" value="Arc Testnet" detail="USDC settlement" /></section><section className="panel empty-state-panel"><div className="section-title"><div><h2>{invoices.length ? "Latest invoices" : "Create your first payment request"}</h2><p>{invoices.length ? "Open the invoice register to manage live requests." : "Invoices generate a provider payment destination and a shareable payment reference."}</p></div><button className="button button-secondary" onClick={onViewInvoices}>Open invoices <ArrowUpRight size={16} /></button></div></section></div>;
-}
-
-function IndividualOverview() {
-  return (
-    <div className="content-stack">
-      <section className="panel empty-workspace-panel">
-        <div className="empty-workspace-icon"><WalletCards size={24} /></div>
-        <div>
-          <h2>Your healthcare payment account is ready</h2>
-          <p>Use your Arc Testnet wallet to pay a provider payment link. Your payment history and receipts will appear here after a verified payment.</p>
-        </div>
-      </section>
-      <section className="panel empty-state-panel">
-        <div><h2>No payment activity yet</h2><p>There are no invoices, treatment escrows, or receipts connected to this account.</p></div>
-      </section>
-    </div>
-  );
 }
 
 function SummaryItem({ label, value, suffix, detail, success, attention }: { label: string; value: string; suffix?: string; detail: string; success?: boolean; attention?: boolean }) {
